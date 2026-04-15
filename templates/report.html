@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Network Report</title>
+	<style>{{ .CSS }}</style>
+</head>
+<body>
+	<div class="page">
+		<header class="header">
+			<h1 class="title" id="title"></h1>
+			<div class="subtitle" id="subtitle"></div>
+		</header>
+
+		<section class="summary" id="summary"></section>
+
+		<section class="toolbar">
+			<input id="search" class="search" type="text" placeholder="РџРѕРёСЃРє РїРѕ IP, hostname, РїРѕСЂС‚Сѓ, СЃРµСЂРІРёСЃСѓ, РїСЂРѕРґСѓРєС‚Сѓ, РІРµСЂСЃРёРё">
+		</section>
+
+		<section id="content"></section>
+	</div>
+
+	<script>
+		const report = {{ .JSONData }};
+
+		const titleNode = document.getElementById("title");
+		const subtitleNode = document.getElementById("subtitle");
+		const summaryNode = document.getElementById("summary");
+		const searchNode = document.getElementById("search");
+		const contentNode = document.getElementById("content");
+
+		function escapeHtml(value) {
+			return String(value ?? "")
+				.replaceAll("&", "&amp;")
+				.replaceAll("<", "&lt;")
+				.replaceAll(">", "&gt;")
+				.replaceAll('"', "&quot;")
+				.replaceAll("'", "&#039;");
+		}
+
+		function metric(value, label) {
+			return `
+				<div class="metric">
+					<div class="metric-value">${escapeHtml(value)}</div>
+					<div class="metric-label">${escapeHtml(label)}</div>
+				</div>
+			`;
+		}
+
+		function formatService(port) {
+			const parts = [];
+			if (port.tunnel) parts.push(port.tunnel);
+			if (port.service) parts.push(port.service);
+			if (port.product) parts.push(port.product);
+			if (port.version) parts.push(port.version);
+			if (port.extra_info) parts.push("(" + port.extra_info + ")");
+			return parts.join(" ");
+		}
+
+		function hostSearchText(host) {
+			const values = [
+				host.ip,
+				host.hostname,
+				host.mac,
+				host.mac_vendor,
+				...(host.os || [])
+			];
+
+			for (const port of host.ports || []) {
+				values.push(
+					String(port.port),
+					port.protocol,
+					port.service,
+					port.product,
+					port.version,
+					port.extra_info,
+					port.tunnel
+				);
+			}
+
+			return values.join(" ").toLowerCase();
+		}
+
+		function renderHeader() {
+			titleNode.textContent = `РћС‚С‡С‘С‚ РїРѕ СЃРµС‚Рё: ${report.network_name}`;
+			subtitleNode.textContent =
+				`CIDR: ${report.cidr} | РСЃС‚РѕС‡РЅРёРє XML: ${report.source_xml} | РЎРіРµРЅРµСЂРёСЂРѕРІР°РЅРѕ: ${report.generated_at}`;
+		}
+
+		function renderSummary() {
+			summaryNode.innerHTML = [
+				metric(report.host_count, "РҐРѕСЃС‚РѕРІ СЃ РѕС‚РєСЂС‹С‚С‹РјРё РїРѕСЂС‚Р°РјРё"),
+				metric(report.open_port_count, "РћС‚РєСЂС‹С‚С‹С… РїРѕСЂС‚РѕРІ"),
+				metric(report.scanner || "-", "РЎРєР°РЅРµСЂ"),
+				metric(report.scanner_version || "-", "Р’РµСЂСЃРёСЏ")
+			].join("");
+		}
+
+		function renderHosts(filterText = "") {
+			const query = filterText.trim().toLowerCase();
+
+			const hosts = (report.hosts || []).filter(host => {
+				if (!query) return true;
+				return hostSearchText(host).includes(query);
+			});
+
+			if (hosts.length === 0) {
+				contentNode.innerHTML = `<section class="block"><div class="empty">РќРёС‡РµРіРѕ РЅРµ РЅР°Р№РґРµРЅРѕ.</div></section>`;
+				return;
+			}
+
+			let html = "";
+
+			for (const host of hosts) {
+				const hostTitle = host.hostname && host.hostname.trim() !== ""
+					? `${escapeHtml(host.hostname)} <span class="muted">(${escapeHtml(host.ip)})</span>`
+					: escapeHtml(host.ip);
+
+				const osText = host.os && host.os.length > 0
+					? host.os.map(escapeHtml).join(", ")
+					: "РЅРµ РѕРїСЂРµРґРµР»РµРЅРѕ";
+
+				const macText = host.mac
+					? `${escapeHtml(host.mac)}${host.mac_vendor ? ` <span class="muted">(${escapeHtml(host.mac_vendor)})</span>` : ""}`
+					: "вЂ”";
+
+				html += `
+					<section class="block">
+						<div class="block-header">
+							<div>
+								<h2>${hostTitle}</h2>
+								<div class="block-note">MAC: ${macText}</div>
+								<div class="block-note">OS: ${osText}</div>
+								<div class="block-note">РћС‚РєСЂС‹С‚С‹С… РїРѕСЂС‚РѕРІ: ${escapeHtml(host.ports.length)}</div>
+							</div>
+						</div>
+
+						<div class="table-wrap">
+							<table>
+								<thead>
+									<tr>
+										<th>РџРѕСЂС‚</th>
+										<th>РџСЂРѕС‚РѕРєРѕР»</th>
+										<th>РЎРµСЂРІРёСЃ</th>
+										<th>РџСЂРѕРґСѓРєС‚</th>
+										<th>Р’РµСЂСЃРёСЏ</th>
+										<th>РћРїРёСЃР°РЅРёРµ</th>
+									</tr>
+								</thead>
+								<tbody>
+				`;
+
+				for (const port of host.ports) {
+					html += `
+						<tr>
+							<td>${escapeHtml(port.port)}</td>
+							<td>${escapeHtml(port.protocol)}</td>
+							<td>${escapeHtml(port.service || "-")}</td>
+							<td>${escapeHtml(port.product || "-")}</td>
+							<td>${escapeHtml(port.version || "-")}</td>
+							<td>${escapeHtml(formatService(port) || "-")}</td>
+						</tr>
+					`;
+				}
+
+				html += `
+								</tbody>
+							</table>
+						</div>
+					</section>
+				`;
+			}
+
+			contentNode.innerHTML = html;
+		}
+
+		searchNode.addEventListener("input", (event) => {
+			renderHosts(event.target.value);
+		});
+
+		renderHeader();
+		renderSummary();
+		renderHosts();
+	</script>
+</body>
+</html>
