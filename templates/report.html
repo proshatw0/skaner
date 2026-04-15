@@ -1,188 +1,128 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Network Report</title>
-	<style>{{ .CSS }}</style>
+<meta charset="UTF-8">
+<title>Network Scan Report</title>
+
+<style>
+{{ .CSS }}
+</style>
 </head>
+
 <body>
-	<div class="page">
-		<header class="header">
-			<h1 class="title" id="title"></h1>
-			<div class="subtitle" id="subtitle"></div>
-		</header>
 
-		<section class="summary" id="summary"></section>
+<div class="container">
+    <h1>Network Report</h1>
 
-		<section class="toolbar">
-			<input id="search" class="search" type="text" placeholder="РџРѕРёСЃРє РїРѕ IP, hostname, РїРѕСЂС‚Сѓ, СЃРµСЂРІРёСЃСѓ, РїСЂРѕРґСѓРєС‚Сѓ, РІРµСЂСЃРёРё">
-		</section>
+    <div class="controls">
+        <input id="search" placeholder="Search by IP, hostname, port, service..." />
 
-		<section id="content"></section>
-	</div>
+        <div class="filters">
+            <button onclick="setFilter('all')">All</button>
+            <button onclick="setFilter('web')">Web</button>
+            <button onclick="setFilter('smtp')">SMTP</button>
+            <button onclick="setFilter('sql')">SQL</button>
+            <button onclick="setFilter('smb')">SMB</button>
+            <button onclick="setFilter('ftp')">FTP</button>
+        </div>
+    </div>
 
-	<script>
-		const report = {{ .JSONData }};
+    <div id="content"></div>
+</div>
 
-		const titleNode = document.getElementById("title");
-		const subtitleNode = document.getElementById("subtitle");
-		const summaryNode = document.getElementById("summary");
-		const searchNode = document.getElementById("search");
-		const contentNode = document.getElementById("content");
+<script>
+const report = {{ .JSONData }};
+let currentFilter = "all";
 
-		function escapeHtml(value) {
-			return String(value ?? "")
-				.replaceAll("&", "&amp;")
-				.replaceAll("<", "&lt;")
-				.replaceAll(">", "&gt;")
-				.replaceAll('"', "&quot;")
-				.replaceAll("'", "&#039;");
-		}
+function hasTag(host, tag) {
+    if (!host.tags) return false;
+    return host.tags.includes(tag);
+}
 
-		function metric(value, label) {
-			return `
-				<div class="metric">
-					<div class="metric-value">${escapeHtml(value)}</div>
-					<div class="metric-label">${escapeHtml(label)}</div>
-				</div>
-			`;
-		}
+function matchFilter(host) {
+    if (currentFilter === "all") return true;
+    return hasTag(host, currentFilter);
+}
 
-		function formatService(port) {
-			const parts = [];
-			if (port.tunnel) parts.push(port.tunnel);
-			if (port.service) parts.push(port.service);
-			if (port.product) parts.push(port.product);
-			if (port.version) parts.push(port.version);
-			if (port.extra_info) parts.push("(" + port.extra_info + ")");
-			return parts.join(" ");
-		}
+function matchSearch(host, query) {
+    if (!query) return true;
 
-		function hostSearchText(host) {
-			const values = [
-				host.ip,
-				host.hostname,
-				host.mac,
-				host.mac_vendor,
-				...(host.os || [])
-			];
+    const str = JSON.stringify(host).toLowerCase();
+    return str.includes(query);
+}
 
-			for (const port of host.ports || []) {
-				values.push(
-					String(port.port),
-					port.protocol,
-					port.service,
-					port.product,
-					port.version,
-					port.extra_info,
-					port.tunnel
-				);
-			}
+function render() {
+    const query = document.getElementById("search").value.toLowerCase();
 
-			return values.join(" ").toLowerCase();
-		}
+    let html = "";
 
-		function renderHeader() {
-			titleNode.textContent = `РћС‚С‡С‘С‚ РїРѕ СЃРµС‚Рё: ${report.network_name}`;
-			subtitleNode.textContent =
-				`CIDR: ${report.cidr} | РСЃС‚РѕС‡РЅРёРє XML: ${report.source_xml} | РЎРіРµРЅРµСЂРёСЂРѕРІР°РЅРѕ: ${report.generated_at}`;
-		}
+    for (const h of report.hosts) {
 
-		function renderSummary() {
-			summaryNode.innerHTML = [
-				metric(report.host_count, "РҐРѕСЃС‚РѕРІ СЃ РѕС‚РєСЂС‹С‚С‹РјРё РїРѕСЂС‚Р°РјРё"),
-				metric(report.open_port_count, "РћС‚РєСЂС‹С‚С‹С… РїРѕСЂС‚РѕРІ"),
-				metric(report.scanner || "-", "РЎРєР°РЅРµСЂ"),
-				metric(report.scanner_version || "-", "Р’РµСЂСЃРёСЏ")
-			].join("");
-		}
+        if (!matchFilter(h)) continue;
+        if (!matchSearch(h, query)) continue;
 
-		function renderHosts(filterText = "") {
-			const query = filterText.trim().toLowerCase();
+        html += `
+        <div class="host">
+            <div class="host-header">
+                <div>
+                    <strong>${h.hostname || "unknown"}</strong>
+                    <span class="ip">${h.ip}</span>
+                </div>
+                <button onclick="toggle('${h.ip}')">Details</button>
+            </div>
 
-			const hosts = (report.hosts || []).filter(host => {
-				if (!query) return true;
-				return hostSearchText(host).includes(query);
-			});
+            <table>
+                <tr>
+                    <th>Port</th>
+                    <th>Service</th>
+                    <th>Product</th>
+                    <th>Version</th>
+                </tr>
+        `;
 
-			if (hosts.length === 0) {
-				contentNode.innerHTML = `<section class="block"><div class="empty">РќРёС‡РµРіРѕ РЅРµ РЅР°Р№РґРµРЅРѕ.</div></section>`;
-				return;
-			}
+        for (const p of h.ports) {
+            html += `
+                <tr>
+                    <td>${p.port}</td>
+                    <td>${p.service || ""}</td>
+                    <td>${p.product || ""}</td>
+                    <td>${p.version || ""}</td>
+                </tr>
+            `;
+        }
 
-			let html = "";
+        html += `</table>`;
 
-			for (const host of hosts) {
-				const hostTitle = host.hostname && host.hostname.trim() !== ""
-					? `${escapeHtml(host.hostname)} <span class="muted">(${escapeHtml(host.ip)})</span>`
-					: escapeHtml(host.ip);
+        html += `<div class="details" id="d-${h.ip}" style="display:none;">`;
 
-				const osText = host.os && host.os.length > 0
-					? host.os.map(escapeHtml).join(", ")
-					: "РЅРµ РѕРїСЂРµРґРµР»РµРЅРѕ";
+        if (h.smb) {
+            html += `<h4>SMB</h4><pre>${h.smb}</pre>`;
+        }
 
-				const macText = host.mac
-					? `${escapeHtml(host.mac)}${host.mac_vendor ? ` <span class="muted">(${escapeHtml(host.mac_vendor)})</span>` : ""}`
-					: "вЂ”";
+        if (h.nfs) {
+            html += `<h4>NFS</h4><pre>${h.nfs}</pre>`;
+        }
 
-				html += `
-					<section class="block">
-						<div class="block-header">
-							<div>
-								<h2>${hostTitle}</h2>
-								<div class="block-note">MAC: ${macText}</div>
-								<div class="block-note">OS: ${osText}</div>
-								<div class="block-note">РћС‚РєСЂС‹С‚С‹С… РїРѕСЂС‚РѕРІ: ${escapeHtml(host.ports.length)}</div>
-							</div>
-						</div>
+        html += `</div></div>`;
+    }
 
-						<div class="table-wrap">
-							<table>
-								<thead>
-									<tr>
-										<th>РџРѕСЂС‚</th>
-										<th>РџСЂРѕС‚РѕРєРѕР»</th>
-										<th>РЎРµСЂРІРёСЃ</th>
-										<th>РџСЂРѕРґСѓРєС‚</th>
-										<th>Р’РµСЂСЃРёСЏ</th>
-										<th>РћРїРёСЃР°РЅРёРµ</th>
-									</tr>
-								</thead>
-								<tbody>
-				`;
+    document.getElementById("content").innerHTML = html;
+}
 
-				for (const port of host.ports) {
-					html += `
-						<tr>
-							<td>${escapeHtml(port.port)}</td>
-							<td>${escapeHtml(port.protocol)}</td>
-							<td>${escapeHtml(port.service || "-")}</td>
-							<td>${escapeHtml(port.product || "-")}</td>
-							<td>${escapeHtml(port.version || "-")}</td>
-							<td>${escapeHtml(formatService(port) || "-")}</td>
-						</tr>
-					`;
-				}
+function toggle(id) {
+    const el = document.getElementById("d-" + id);
+    el.style.display = el.style.display === "none" ? "block" : "none";
+}
 
-				html += `
-								</tbody>
-							</table>
-						</div>
-					</section>
-				`;
-			}
+function setFilter(f) {
+    currentFilter = f;
+    render();
+}
 
-			contentNode.innerHTML = html;
-		}
+document.getElementById("search").oninput = render;
 
-		searchNode.addEventListener("input", (event) => {
-			renderHosts(event.target.value);
-		});
+render();
+</script>
 
-		renderHeader();
-		renderSummary();
-		renderHosts();
-	</script>
 </body>
 </html>

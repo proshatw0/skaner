@@ -33,12 +33,13 @@ type ScanSettings struct {
 }
 
 type NetworkConfig struct {
-	Name         string `json:"name"`
-	CIDR         string `json:"cidr"`
-	DiscoveryXML string `json:"discovery_xml"`
-	XMLInput     string `json:"xml_input"`
-	HTMLOutput   string `json:"html_output"`
-	Enabled      bool   `json:"enabled"`
+	Name           string   `json:"name"`
+	CIDR           string   `json:"cidr"`
+	DiscoveryXML   string   `json:"discovery_xml"`
+	XMLInput       string   `json:"xml_input"`
+	HTMLOutput     string   `json:"html_output"`
+	WhitelistHosts []string `json:"whitelist_hosts"`
+	Enabled        bool     `json:"enabled"`
 }
 
 type NmapRun struct {
@@ -139,7 +140,10 @@ type HostReport struct {
 	MACVendor string       `json:"mac_vendor"`
 	Status    string       `json:"status"`
 	OS        []string     `json:"os"`
+	Tags      []string     `json:"tags"`
 	Ports     []PortReport `json:"ports"`
+	SMB       *SMBResult   `json:"smb,omitempty"`
+	NFS       *NFSResult   `json:"nfs,omitempty"`
 }
 
 type PortReport struct {
@@ -150,6 +154,17 @@ type PortReport struct {
 	Version   string `json:"version"`
 	ExtraInfo string `json:"extra_info"`
 	Tunnel    string `json:"tunnel"`
+}
+
+type SMBResult struct {
+	Shares []string `json:"shares"`
+	Users  []string `json:"users"`
+	Raw    string   `json:"raw"`
+}
+
+type NFSResult struct {
+	Exports []string `json:"exports"`
+	Raw     string   `json:"raw"`
 }
 
 type HTMLTemplateData struct {
@@ -198,6 +213,9 @@ func main() {
 		}
 
 		report := buildReport(network, run)
+
+		logStep("enum", "auto-detecting additional file-service scans")
+		enrichReport(&report, network)
 
 		logStep("report", fmt.Sprintf(
 			"network=%s hosts=%d open_ports=%d output=%s",
@@ -408,6 +426,28 @@ func runCommand(name string, args ...string) error {
 	return err
 }
 
+func runCommandCapture(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	out := strings.TrimSpace(stdout.String())
+	errOut := strings.TrimSpace(stderr.String())
+
+	if out != "" && errOut != "" {
+		return out + "\n\n" + errOut, err
+	}
+	if out != "" {
+		return out, err
+	}
+	return errOut, err
+}
+
 func parseNmapXML(path string) (NmapRun, error) {
 	var run NmapRun
 
@@ -483,6 +523,7 @@ func buildReport(network NetworkConfig, run NmapRun) Report {
 			MACVendor: pickMACVendor(host.Addresses),
 			Status:    host.Status.State,
 			OS:        collectOSMatches(host.OS),
+			Tags:      buildHostTags(openPorts),
 			Ports:     openPorts,
 		})
 	}
@@ -500,6 +541,227 @@ func buildReport(network NetworkConfig, run NmapRun) Report {
 	report.OpenPortCount = openPortCount
 
 	return report
+}
+
+func enrichReport(report *Report, network NetworkConfig) {
+	for i := range report.Hosts {
+		host := &report.Hosts[i]
+
+		if !isWhitelisted(host.IP, network.WhitelistHosts) {
+			continue
+		}
+
+		if hostHasPort(host, 139) || hostHasPort(host, 445) {
+			logStep("enum", "SMB detected on "+host.IP)
+			smb, err := runSMBEnum(host.IP)
+			if err == nil && smb != nil {
+				host.SMB = smb
+			}
+		}
+
+		if hostHasPort(host, 111) || hostHasPort(host, 2049) {
+			logStep("enum", "NFS detected on "+host.IP)
+			nfs, err := runNFSEnum(host.IP)
+			if err == nil && nfs != nil {
+				host.NFS = nfs
+			}
+		}
+	}
+}
+
+func runSMBEnum(ip string) (*SMBResult, error) {
+	out, err := runCommandCapture(
+		"nmap",
+		"-Pn",
+		"-n",
+		"-p", "139,445",
+		"--script", "smb-enum-shares,smb-enum-users",
+		ip,
+	)
+	if err != nil && strings.TrimSpace(out) == "" {
+		return nil, err
+	}
+
+	return &SMBResult{
+		Shares: parseSMBShares(out),
+		Users:  parseSMBUsers(out),
+		Raw:    out,
+	}, nil
+}
+
+func runNFSEnum(ip string) (*NFSResult, error) {
+	out, err := runCommandCapture("showmount", "-e", ip)
+	if err != nil && strings.TrimSpace(out) == "" {
+		return nil, err
+	}
+
+	return &NFSResult{
+		Exports: parseNFSExports(out),
+		Raw:     out,
+	}, nil
+}
+
+func parseSMBShares(text string) []string {
+	lines := strings.Split(text, "\n")
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(strings.TrimLeft(line, "|_ "))
+		if !strings.HasPrefix(line, `\\`) {
+			continue
+		}
+
+		lastSlash := strings.LastIndex(line, `\`)
+		if lastSlash < 0 || lastSlash+1 >= len(line) {
+			continue
+		}
+
+		share := strings.TrimSpace(strings.TrimSuffix(line[lastSlash+1:], ":"))
+		if share == "" {
+			continue
+		}
+
+		if _, ok := seen[share]; ok {
+			continue
+		}
+		seen[share] = struct{}{}
+		result = append(result, share)
+	}
+
+	sort.Strings(result)
+	return result
+}
+
+func parseSMBUsers(text string) []string {
+	lines := strings.Split(text, "\n")
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(strings.TrimLeft(line, "|_ "))
+		if strings.HasPrefix(line, `\\`) {
+			continue
+		}
+		if !strings.Contains(line, `\`) {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		for _, field := range fields {
+			if !strings.Contains(field, `\`) {
+				continue
+			}
+
+			user := strings.Trim(field, "(),")
+			user = strings.TrimSpace(user)
+			if user == "" {
+				continue
+			}
+
+			if _, ok := seen[user]; ok {
+				continue
+			}
+			seen[user] = struct{}{}
+			result = append(result, user)
+		}
+	}
+
+	sort.Strings(result)
+	return result
+}
+
+func parseNFSExports(text string) []string {
+	lines := strings.Split(text, "\n")
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(line), "export list") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+
+		exportPath := fields[0]
+		if !strings.HasPrefix(exportPath, "/") {
+			continue
+		}
+
+		if _, ok := seen[exportPath]; ok {
+			continue
+		}
+		seen[exportPath] = struct{}{}
+		result = append(result, exportPath)
+	}
+
+	sort.Strings(result)
+	return result
+}
+
+func buildHostTags(ports []PortReport) []string {
+	tags := make(map[string]struct{})
+
+	for _, p := range ports {
+		service := strings.ToLower(strings.TrimSpace(p.Service))
+
+		switch {
+		case p.Port == 80 || p.Port == 443 || service == "http" || service == "https":
+			tags["web"] = struct{}{}
+		case p.Port == 25 || service == "smtp":
+			tags["smtp"] = struct{}{}
+		case p.Port == 21 || service == "ftp":
+			tags["ftp"] = struct{}{}
+			tags["file-storage"] = struct{}{}
+		case p.Port == 22 || service == "ssh":
+			tags["ssh"] = struct{}{}
+		case p.Port == 139 || p.Port == 445 || service == "microsoft-ds" || service == "netbios-ssn":
+			tags["smb"] = struct{}{}
+			tags["file-storage"] = struct{}{}
+		case p.Port == 111 || p.Port == 2049 || service == "nfs":
+			tags["nfs"] = struct{}{}
+			tags["file-storage"] = struct{}{}
+		case p.Port == 1433 || p.Port == 3306 || p.Port == 5432 || p.Port == 1521 ||
+			service == "ms-sql-s" || service == "mysql" || service == "postgresql" || service == "oracle":
+			tags["sql"] = struct{}{}
+		}
+	}
+
+	result := make([]string, 0, len(tags))
+	for tag := range tags {
+		result = append(result, tag)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func isWhitelisted(ip string, whitelist []string) bool {
+	if len(whitelist) == 0 {
+		return false
+	}
+
+	for _, item := range whitelist {
+		if strings.TrimSpace(item) == ip {
+			return true
+		}
+	}
+	return false
+}
+
+func hostHasPort(host *HostReport, port int) bool {
+	for _, p := range host.Ports {
+		if p.Port == port {
+			return true
+		}
+	}
+	return false
 }
 
 func pickIPv4(addrs []NmapAddress) string {

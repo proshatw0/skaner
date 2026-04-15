@@ -1,5 +1,6 @@
 {
-  "scan_enabled": false,
+  "scan_enabled": true,
+
   "scan": {
     "discovery_enabled": true,
     "top_ports": 1000,
@@ -9,13 +10,17 @@
     "os_detection": true,
     "version_intensity": "light"
   },
+
   "networks": [
     {
       "name": "",
       "cidr": "",
-      "discovery_xml": ".xml",
-      "xml_input": ".xml",
-      "html_output": ".html",
+
+      "discovery_xml": "test_d.xml",
+      "xml_input": "test-scan.xml",
+      "html_output": "test-report.html",
+
+      "whitelist_hosts": [],
       "enabled": true
     }
   ]
