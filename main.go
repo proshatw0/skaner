@@ -142,8 +142,10 @@ type HostReport struct {
 	OS        []string     `json:"os"`
 	Tags      []string     `json:"tags"`
 	Ports     []PortReport `json:"ports"`
-	SMB       *SMBResult   `json:"smb,omitempty"`
-	NFS       *NFSResult   `json:"nfs,omitempty"`
+
+	SMB *SMBResult `json:"smb,omitempty"`
+	NFS *NFSResult `json:"nfs,omitempty"`
+	RPC string     `json:"rpc,omitempty"`
 }
 
 type PortReport struct {
@@ -518,7 +520,7 @@ func buildReport(network NetworkConfig, run NmapRun) Report {
 
 		report.Hosts = append(report.Hosts, HostReport{
 			IP:        ip,
-			Hostname:  pickHostname(host.Hostnames),
+			Hostname:  pickHostname(host.Hostnames, ip),
 			MAC:       pickMAC(host.Addresses),
 			MACVendor: pickMACVendor(host.Addresses),
 			Status:    host.Status.State,
@@ -546,11 +548,9 @@ func buildReport(network NetworkConfig, run NmapRun) Report {
 func enrichReport(report *Report, network NetworkConfig) {
 	for i := range report.Hosts {
 		host := &report.Hosts[i]
-
 		if !isWhitelisted(host.IP, network.WhitelistHosts) {
 			continue
 		}
-
 		if hostHasPort(host, 139) || hostHasPort(host, 445) {
 			logStep("enum", "SMB detected on "+host.IP)
 			smb, err := runSMBEnum(host.IP)
@@ -558,9 +558,12 @@ func enrichReport(report *Report, network NetworkConfig) {
 				host.SMB = smb
 			}
 		}
-
 		if hostHasPort(host, 111) || hostHasPort(host, 2049) {
 			logStep("enum", "NFS detected on "+host.IP)
+			rpc, err := runRPCEnum(host.IP)
+			if err == nil {
+				host.RPC = rpc
+			}
 			nfs, err := runNFSEnum(host.IP)
 			if err == nil && nfs != nil {
 				host.NFS = nfs
@@ -780,11 +783,20 @@ func pickAnyAddress(addrs []NmapAddress) string {
 	return addrs[0].Addr
 }
 
-func pickHostname(hostnames NmapHostnames) string {
-	if len(hostnames.Hostnames) == 0 {
-		return ""
+func pickHostname(hostnames NmapHostnames, ip string) string {
+	if len(hostnames.Hostnames) > 0 {
+		name := strings.TrimSpace(hostnames.Hostnames[0].Name)
+		if name != "" {
+			return name
+		}
 	}
-	return hostnames.Hostnames[0].Name
+
+	names, err := net.LookupAddr(ip)
+	if err == nil && len(names) > 0 {
+		return strings.TrimSuffix(names[0], ".")
+	}
+
+	return ip
 }
 
 func pickMAC(addrs []NmapAddress) string {
@@ -833,6 +845,23 @@ func compareIPStrings(a, b string) bool {
 		return ipa[i] < ipb[i]
 	}
 	return false
+}
+
+func runRPCEnum(ip string) (string, error) {
+	out, err := runCommandCapture(
+		"nmap",
+		"-Pn",
+		"-n",
+		"-p", "111",
+		"--script", "rpcinfo",
+		ip,
+	)
+
+	if err != nil && strings.TrimSpace(out) == "" {
+		return "", err
+	}
+
+	return out, nil
 }
 
 func writeHTMLReport(path string, report Report) error {

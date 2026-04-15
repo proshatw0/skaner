@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Network Scan Report</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Report</title>
 
 <style>
 {{ .CSS }}
@@ -11,117 +12,210 @@
 
 <body>
 
-<div class="container">
-    <h1>Network Report</h1>
+<div class="page">
 
-    <div class="controls">
-        <input id="search" placeholder="Search by IP, hostname, port, service..." />
+	<header class="header">
+		<h1 id="title"></h1>
+		<div id="subtitle"></div>
+	</header>
 
-        <div class="filters">
-            <button onclick="setFilter('all')">All</button>
-            <button onclick="setFilter('web')">Web</button>
-            <button onclick="setFilter('smtp')">SMTP</button>
-            <button onclick="setFilter('sql')">SQL</button>
-            <button onclick="setFilter('smb')">SMB</button>
-            <button onclick="setFilter('ftp')">FTP</button>
-        </div>
-    </div>
+	<section id="summary" class="summary"></section>
 
-    <div id="content"></div>
+	<section class="toolbar">
+		<input id="search" class="search"
+			placeholder="Search by IP, hostname, port, service, version">
+
+		<div id="filters" class="filters"></div>
+	</section>
+
+	<section id="content"></section>
+
 </div>
 
 <script>
+
 const report = {{ .JSONData }};
-let currentFilter = "all";
+
+const FILTERS = [
+	{ key: "all", label: "All" },
+	{ key: "web", label: "Web" },
+	{ key: "smtp", label: "SMTP" },
+	{ key: "sql", label: "SQL" },
+	{ key: "smb", label: "SMB" },
+	{ key: "nfs", label: "NFS" },
+	{ key: "ftp", label: "FTP" },
+	{ key: "ssh", label: "SSH" },
+	{ key: "file-storage", label: "File Storage" }
+];
+
+let activeFilter = "all";
+
+function escapeHtml(s) {
+	return String(s || "")
+		.replaceAll("&","&amp;")
+		.replaceAll("<","&lt;")
+		.replaceAll(">","&gt;");
+}
 
 function hasTag(host, tag) {
-    if (!host.tags) return false;
-    return host.tags.includes(tag);
+	return host.tags && host.tags.includes(tag);
 }
 
 function matchFilter(host) {
-    if (currentFilter === "all") return true;
-    return hasTag(host, currentFilter);
+	if (activeFilter === "all") return true;
+	return hasTag(host, activeFilter);
 }
 
-function matchSearch(host, query) {
-    if (!query) return true;
-
-    const str = JSON.stringify(host).toLowerCase();
-    return str.includes(query);
+function matchSearch(host, q) {
+	if (!q) return true;
+	return JSON.stringify(host).toLowerCase().includes(q);
 }
 
-function render() {
-    const query = document.getElementById("search").value.toLowerCase();
+function renderHeader() {
+	document.getElementById("title").textContent =
+		`Network: ${report.network_name}`;
 
-    let html = "";
-
-    for (const h of report.hosts) {
-
-        if (!matchFilter(h)) continue;
-        if (!matchSearch(h, query)) continue;
-
-        html += `
-        <div class="host">
-            <div class="host-header">
-                <div>
-                    <strong>${h.hostname || "unknown"}</strong>
-                    <span class="ip">${h.ip}</span>
-                </div>
-                <button onclick="toggle('${h.ip}')">Details</button>
-            </div>
-
-            <table>
-                <tr>
-                    <th>Port</th>
-                    <th>Service</th>
-                    <th>Product</th>
-                    <th>Version</th>
-                </tr>
-        `;
-
-        for (const p of h.ports) {
-            html += `
-                <tr>
-                    <td>${p.port}</td>
-                    <td>${p.service || ""}</td>
-                    <td>${p.product || ""}</td>
-                    <td>${p.version || ""}</td>
-                </tr>
-            `;
-        }
-
-        html += `</table>`;
-
-        html += `<div class="details" id="d-${h.ip}" style="display:none;">`;
-
-        if (h.smb) {
-            html += `<h4>SMB</h4><pre>${h.smb}</pre>`;
-        }
-
-        if (h.nfs) {
-            html += `<h4>NFS</h4><pre>${h.nfs}</pre>`;
-        }
-
-        html += `</div></div>`;
-    }
-
-    document.getElementById("content").innerHTML = html;
+	document.getElementById("subtitle").textContent =
+		`CIDR: ${report.cidr} | Generated: ${report.generated_at}`;
 }
 
-function toggle(id) {
-    const el = document.getElementById("d-" + id);
-    el.style.display = el.style.display === "none" ? "block" : "none";
+function renderSummary() {
+	document.getElementById("summary").innerHTML = `
+		<div class="metric">Hosts: ${report.host_count}</div>
+		<div class="metric">Open Ports: ${report.open_port_count}</div>
+		<div class="metric">Scanner: ${report.scanner}</div>
+	`;
+}
+
+function renderFilters() {
+	const container = document.getElementById("filters");
+
+	container.innerHTML = FILTERS.map(f => `
+		<button class="${f.key === activeFilter ? 'active' : ''}"
+			onclick="setFilter('${f.key}')">
+			${f.label}
+		</button>
+	`).join("");
 }
 
 function setFilter(f) {
-    currentFilter = f;
-    render();
+	activeFilter = f;
+	render();
+}
+
+function render() {
+	const q = document.getElementById("search").value.toLowerCase();
+
+	let html = "";
+
+	for (const h of report.hosts) {
+
+		if (!matchFilter(h)) continue;
+		if (!matchSearch(h, q)) continue;
+
+		html += `
+		<div class="host">
+
+			<div class="host-header">
+				<div>
+					<strong>${escapeHtml(h.hostname || h.ip)}</strong>
+					<span class="ip">${h.ip}</span>
+				</div>
+			</div>
+
+			<div class="tags">
+				${(h.tags || []).map(t => `<span class="tag">${t}</span>`).join("")}
+			</div>
+
+			<table>
+				<tr>
+					<th>Port</th>
+					<th>Service</th>
+					<th>Product</th>
+					<th>Version</th>
+				</tr>
+		`;
+
+		for (const p of h.ports) {
+			html += `
+				<tr>
+					<td>${p.port}</td>
+					<td>${escapeHtml(p.service)}</td>
+					<td>${escapeHtml(p.product)}</td>
+					<td>${escapeHtml(p.version)}</td>
+				</tr>
+			`;
+		}
+
+		html += `</table>`;
+
+		html += `<div class="details">`;
+
+		html += `
+			<h4>System</h4>
+			<div>OS: ${(h.os && h.os.length) ? h.os.join(", ") : "unknown"}</div>
+		`;
+
+		if (h.smb) {
+			html += `
+			<h4>SMB</h4>
+			<div><b>Shares:</b></div>
+			<ul>
+				${(h.smb.shares || []).map(x => `<li>${x}</li>`).join("")}
+			</ul>
+
+			<div><b>Users:</b></div>
+			<ul>
+				${(h.smb.users || []).map(x => `<li>${x}</li>`).join("")}
+			</ul>
+
+			<details>
+				<summary>Raw SMB Output</summary>
+				<pre>${escapeHtml(h.smb.raw)}</pre>
+			</details>
+			`;
+		}
+
+		if (h.nfs) {
+			html += `
+			<h4>NFS</h4>
+
+			<div><b>Exports:</b></div>
+			<ul>
+				${(h.nfs.exports || []).map(x => `<li>${x}</li>`).join("")}
+			</ul>
+
+			<details>
+				<summary>Raw NFS Output</summary>
+				<pre>${escapeHtml(h.nfs.raw)}</pre>
+			</details>
+			`;
+		}
+
+		if (h.rpc) {
+			html += `
+			<h4>RPC (Port 111)</h4>
+
+			<details>
+				<summary>Show RPC Info</summary>
+				<pre>${escapeHtml(h.rpc)}</pre>
+			</details>
+			`;
+		}
+
+		html += `</div></div>`;
+	}
+
+	document.getElementById("content").innerHTML = html;
 }
 
 document.getElementById("search").oninput = render;
 
+renderHeader();
+renderSummary();
+renderFilters();
 render();
+
 </script>
 
 </body>
