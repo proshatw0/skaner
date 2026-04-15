@@ -1,0 +1,19 @@
+{
+  "networks": [
+    {
+      "name": "",
+      "cidr": "",
+      "enabled": true
+    }
+  ],
+  "scan": {
+    "discovery_xml": "discovery.xml",
+    "detail_xml": "scan.xml",
+    "output_html": "report.html",
+    "top_ports": 1000,
+    "timing": "T4",
+    "max_retries": 1,
+    "service_detection": true,
+    "os_detection": true
+  }
+}
