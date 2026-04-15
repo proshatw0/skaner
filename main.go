@@ -569,23 +569,59 @@ func enrichReport(report *Report, network NetworkConfig) {
 }
 
 func runSMBEnum(ip string) (*SMBResult, error) {
-	out, err := runCommandCapture(
-		"nmap",
-		"-Pn",
-		"-n",
-		"-p", "139,445",
-		"--script", "smb-enum-shares,smb-enum-users",
-		ip,
-	)
-	if err != nil && strings.TrimSpace(out) == "" {
-		return nil, err
-	}
+ result := &SMBResult{}
 
-	return &SMBResult{
-		Shares: parseSMBShares(out),
-		Users:  parseSMBUsers(out),
-		Raw:    out,
-	}, nil
+ nmapOut, _ := runCommandCapture(
+  "nmap",
+  "-Pn",
+  "-n",
+  "-p", "139,445",
+  "--script",
+  "smb-enum-shares,smb-enum-users,smb-os-discovery",
+  ip,
+ )
+
+ result.Raw += "\n=== NMAP ===\n" + nmapOut
+
+ smbOut, _ := runCommandCapture(
+  "smbclient",
+  "-L", "//"+ip+"/",
+  "-N",
+ )
+
+ result.Raw += "\n=== SMBCLIENT ===\n" + smbOut
+
+ for _, line := range strings.Split(smbOut, "\n") {
+  line = strings.TrimSpace(line)
+
+  if strings.Contains(line, "Disk") || strings.Contains(line, "IPC") {
+   fields := strings.Fields(line)
+   if len(fields) > 0 {
+    result.Shares = append(result.Shares, fields[0])
+   }
+  }
+ }
+
+ rpcOut, _ := runCommandCapture(
+  "rpcclient",
+  "-U", "",
+  "-N",
+  ip,
+  "-c", "enumdomusers",
+ )
+
+ result.Raw += "\n=== RPCCLIENT ===\n" + rpcOut
+
+ for _, line := range strings.Split(rpcOut, "\n") {
+  if strings.Contains(line, "user:") {
+   result.Users = append(result.Users, line)
+  }
+ }
+
+ result.Shares = uniqueStrings(result.Shares)
+ result.Users = uniqueStrings(result.Users)
+
+ return result, nil
 }
 
 func runNFSEnum(ip string) (*NFSResult, error) {
