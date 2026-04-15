@@ -38,7 +38,6 @@ type NetworkConfig struct {
 	DiscoveryXML   string   `json:"discovery_xml"`
 	XMLInput       string   `json:"xml_input"`
 	HTMLOutput     string   `json:"html_output"`
-	WhitelistHosts []string `json:"whitelist_hosts"`
 	Enabled        bool     `json:"enabled"`
 }
 
@@ -548,9 +547,6 @@ func buildReport(network NetworkConfig, run NmapRun) Report {
 func enrichReport(report *Report, network NetworkConfig) {
 	for i := range report.Hosts {
 		host := &report.Hosts[i]
-		if !isWhitelisted(host.IP, network.WhitelistHosts) {
-			continue
-		}
 		if hostHasPort(host, 139) || hostHasPort(host, 445) {
 			logStep("enum", "SMB detected on "+host.IP)
 			smb, err := runSMBEnum(host.IP)
